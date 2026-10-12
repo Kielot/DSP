@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Face Following Robot</title>
+<style>
+* { box-sizing: border-box; }
+:root { color-scheme: dark; --bg: #101417; --surface: #182126; --surface-raised: #202d33; --border: #314149; --text: #f3f7f8; --muted: #a9b8bd; --accent: #5ed6b0; --warning: #f2b45b; --danger: #f07c78; }
+body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; line-height: 1.45; }
+h1 { margin: 0; font-size: clamp(1.6rem, 4vw, 2.25rem); letter-spacing: .02em; }
+.page-header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.subtitle { margin: 4px 0 0; color: var(--muted); font-size: .95rem; }
+.container { max-width: 960px; margin: auto; }
+[hidden] { display: none !important; }
+.camera-container { position: relative; width: 100%; max-width: 480px; height: 500px; margin: 0 auto; background: #050708; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+/* Front camera: the raw stream is unmirrored. Any mirroring is display-only (MIRROR_PREVIEW) and is applied to the video AND the box together. */
+video { display: block; width: 100%; height: 100%; object-fit: cover; }
+canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-top: 16px; }
+.panel-heading { margin: 0 0 12px; font-size: .78rem; letter-spacing: .1em; color: var(--muted); }
+.status { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.status-box { background: var(--surface-raised); border-radius: 7px; padding: 12px; min-width: 0; }
+.label { color: var(--muted); font-size: .78rem; letter-spacing: .04em; }
+.value { font-size: 20px; font-weight: bold; margin-top: 5px; }
+#command { text-align: center; font-size: 40px; font-weight: bold; margin: 8px 0; }
+#faceStatus { text-align: center; font-size: 18px; }
+.posbar { position: relative; height: 14px; background: var(--surface-raised); border-radius: 7px; margin: 18px 0 8px; }
+.posbar .zone { position: absolute; top: 0; bottom: 0; background: #444; }
+.posbar .center { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background: #888; }
+.posbar .mark { position: absolute; top: -4px; width: 8px; height: 22px; border-radius: 4px; background: #666; transform: translateX(-50%); left: 50%; }
+#posText { text-align: center; font-size: 18px; font-weight: bold; }
+.connected { color: var(--accent); }
+.disconnected { color: var(--danger); }
+.connecting { color: var(--warning); }
+button { display: block; width: 100%; margin-top: 15px; padding: 13px 15px; border: 1px solid transparent; border-radius: 7px; background: #2d7f70; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
+button:first-child { margin-top: 0; }
+button:hover:not(:disabled) { background: #399b87; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:focus-visible { outline: 3px solid #f7d37b; outline-offset: 3px; }
+button:disabled { opacity: .6; cursor: wait; }
+#recognitionControls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#recognitionControls button { margin-top: 0; }
+#forgetButton { background: #6a4546; }
+#forgetButton:hover:not(:disabled) { background: #855658; }
+#debug { white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; color: #bbb; max-height: 250px; overflow-y: auto; }
+@media (max-width: 680px) { body { padding: 14px; } .page-header { display: block; } .status { grid-template-columns: repeat(2, 1fr); } #command { font-size: 32px; } }
+@media (max-width: 420px) { .panel { padding: 14px; } .status { grid-template-columns: 1fr 1fr; } #recognitionControls { grid-template-columns: 1fr; } #recognitionControls button { margin-top: 0; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <header class="page-header">
+    <div>
+      <h1>Person Following Robot</h1>
+    </div>
+  </header>
+
+  <div id="cameraContainer" class="camera-container" hidden>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="startPanel" class="panel">
+    <button id="startButton" type="button">Start Camera</button>
+  </div>
+
+  <div id="robotStatePanel" class="panel" hidden>
+    <h2 class="panel-heading">CURRENT ROBOT STATE</h2>
+    <div id="command" aria-live="polite">STOP</div>
+    <div id="faceStatus" aria-live="polite">Camera not started</div>
+    <div class="posbar"><div class="zone" id="zone"></div><div class="center"></div><div class="mark" id="mark"></div></div>
+    <div id="posText">Person: -</div>
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-heading">FACE MEMORY</h2>
+    <div id="recognitionStatus" class="value" aria-live="polite">Checking SFace...</div>
+    <div id="recognitionControls">
+      <button id="enrollButton" type="button">Remember Current Face</button>
+      <button id="forgetButton" type="button" hidden>Forget Current Face</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2 class="panel-heading">SYSTEM DETAILS</h2>
+    <div class="status">
+      <div class="status-box"><div class="label">WebSocket</div><div id="wsStatus" class="value connecting">Connecting...</div></div>
+      <div class="status-box"><div class="label">Camera</div><div id="camStatus" class="value disconnected">Off</div></div>
+      <div class="status-box"><div class="label">WebRTC</div><div id="rtcStatus" class="value disconnected">Not connected</div></div>
+      <div class="status-box"><div class="label">Detector FPS</div><div id="fps" class="value">-</div></div>
+      <div class="status-box"><div class="label">Target</div><div id="target" class="value">-</div></div>
+      <div class="status-box"><div class="label">Identity</div><div id="identity" class="value">-</div></div>
+      <div class="status-box"><div class="label">Tracking ID</div><div id="trackId" class="value">-</div></div>
+      <div class="status-box"><div class="label">Offset</div><div id="offset" class="value">-</div></div>
+      <div class="status-box"><div class="label">Steering</div><div id="steering" class="value">-</div></div>
+      <div class="status-box"><div class="label">Speed</div><div id="speed" class="value">-</div></div>
+      <div class="status-box"><div class="label">Last Confirmed (manual)</div><div id="lastConfirmed" class="value">-</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label">DEBUG</div>
+    <div id="debug"></div>
+  </div>
+</div>
+
+<script>
+/* ===== SETTINGS ===== */
+const MIRROR_PREVIEW = true;     // true = selfie-style mirrored preview (display only; the robot never uses this)
+// Overlay only: YOLO detects the whole person, so the head box is estimated from the top of the person box.
+const SHOW_FULL_BODY_BOX = true;   // true = draw the full person box (what the robot actually tracks)
+const FACE_BOX_WIDTH_RATIO = 0.45; // head width as a fraction of the person-box width (raise if the box is too small)
+const FACE_BOX_ASPECT = 1.25;      // head height / head width
+const DEAD_ZONE_UI = 0.08;        // keep equal to DEAD_ZONE in server.py (only used for the guides/labels)
+const STUN_URL = "stun:stun.l.google.com:19302"; // set to null for LAN-only
+const SEND_SCALE_DOWN = 2;       // 1280x720 captured, 640x360 sent (less decode/convert work on the PC). Use 1 for full size.
+const SEND_MAX_FPS = 30;
+const SEND_MAX_BITRATE = 2000000; // bits/s, plenty for local Wi-Fi
+const TELEMETRY_STALE_MS = 600;  // hide box / mark "no data" if telemetry stops
+
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+$("zone").style.left = (50 - DEAD_ZONE_UI * 50) + "%";
+$("zone").style.width = (DEAD_ZONE_UI * 100) + "%";
+if (MIRROR_PREVIEW) video.style.transform = canvas.style.transform = "scaleX(-1)";
+
+function log(msg) {
+  console.log(msg);
+  const d = $("debug");
+  d.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  d.scrollTop = d.scrollHeight;
+}
+function setStatus(el, text, cls) { el.textContent = text; el.className = "value " + cls; }
+
+/* ===== WEBSOCKET (same /ws endpoint as before) ===== */
+let socket = null, lastTelemetryTime = 0;
+
+function connectWebSocket() {
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  log("[WS] Connecting to " + url);
+  setStatus($("wsStatus"), "Connecting...", "connecting");
+  socket = new WebSocket(url);
+
+  // Note: no STOP is sent on connect. Tracking is now server-driven.
+  socket.onopen = () => { log("[WS] Connected"); setStatus($("wsStatus"), "Connected", "connected"); };
+
+  socket.onmessage = (event) => {
+    const text = String(event.data).trim();
+    if (text.startsWith("{")) {
+      try { handleTelemetry(JSON.parse(text)); } catch (e) { log("[WS] Bad telemetry: " + e.message); }
+      return;
+    }
+    // Legacy manual-command confirmation ("STOP", "LEFT", "ERROR", ...)
+    if (text.toUpperCase() === "ERROR") { log("[WS] ESP32 command failed"); return; }
+    $("lastConfirmed").textContent = text.toUpperCase();
+  };
+
+  socket.onclose = () => {
+    log("[WS] Disconnected");
+    setStatus($("wsStatus"), "Disconnected", "disconnected");
+    setTimeout(connectWebSocket, 1000);
+  };
+  socket.onerror = () => log("[WS] Connection error");
+}
+
+/* Legacy manual command, kept for bench testing: sendCommand("STOP") in the console.
+   The ESP32 failsafe stops the motors after 500 ms, so manual motion needs repeating. */
+function sendCommand(cmd) {
+  cmd = String(cmd).trim().toUpperCase();
+  if (!["LEFT", "RIGHT", "FORWARD", "BACKWARD", "STOP"].includes(cmd)) { log("[COMMAND] Invalid: " + cmd); return; }
+  if (!socket || socket.readyState !== WebSocket.OPEN) { log("[COMMAND] WebSocket not ready: " + cmd); return; }
+  socket.send(cmd);
+  log("[SEND] " + cmd);
+}
+window.sendCommand = sendCommand;
+
+/* ===== TELEMETRY DISPLAY ===== */
+function handleTelemetry(t) {
+  lastTelemetryTime = performance.now();
+  const found = !!t.target;
+
+  $("command").textContent = t.state || "STOP";
+  $("fps").textContent = t.fps != null ? t.fps : "-";
+  setStatus($("target"), found ? "FOUND" : "LOST", found ? "connected" : "disconnected");
+  $("identity").textContent = found ? (t.identity || "Unknown") : "-";
+  $("trackId").textContent = found && t.tracking_id != null ? t.tracking_id : "-";
+  $("offset").textContent = t.offset != null ? t.offset.toFixed(2) : "-";
+  $("steering").textContent = t.steering != null ? t.steering.toFixed(2) : "-";
+  $("speed").textContent = t.speed != null ? t.speed.toFixed(2) : "-";
+  $("faceStatus").textContent = found ? "Target locked" : "No target";
+
+  updatePosition(found ? t.offset : null, t.steering);
+  drawBox(found ? t.box : null, t.tracking_id, t.others);
+}
+
+function updateRecognitionActions(names) {
+  const enrolled = names.length > 0;
+  $("enrollButton").hidden = enrolled;
+  $("forgetButton").hidden = !enrolled;
+}
+
+async function refreshRecognitionStatus() {
+  try {
+    const response = await fetch("/recognition/status");
+    const status = await response.json();
+    if (!status.available) {
+      updateRecognitionActions([]);
+      setStatus($("recognitionStatus"), "SFace unavailable", "disconnected");
+      return;
+    }
+    updateRecognitionActions(status.names);
+    const names = status.names.length ? status.names.join(", ") : "No remembered faces";
+    setStatus($("recognitionStatus"), names, "connected");
+  } catch (error) {
+    setStatus($("recognitionStatus"), "Recognition offline", "disconnected");
+  }
+}
+
+const RECOGNITION_NAME = "Enrolled Face";
+
+async function recognitionRequest(path) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: RECOGNITION_NAME })
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Recognition request failed");
+  return result;
+}
+
+function setRecognitionBusy(busy) {
+  $("enrollButton").disabled = busy;
+  $("forgetButton").disabled = busy;
+}
+
+$("enrollButton").addEventListener("click", async () => {
+  try {
+    setRecognitionBusy(true);
+    await recognitionRequest("/recognition/enroll");
+    log("[SFace] Remembered the current face; motors paused");
+    await refreshRecognitionStatus();
+  } catch (error) { log("[SFace] " + error.message); }
+  finally { setRecognitionBusy(false); }
+});
+
+$("forgetButton").addEventListener("click", async () => {
+  try {
+    setRecognitionBusy(true);
+    await recognitionRequest("/recognition/forget");
+    log("[SFace] Forgot the remembered face");
+    await refreshRecognitionStatus();
+  } catch (error) { log("[SFace] " + error.message); }
+  finally { setRecognitionBusy(false); }
+});
+
+refreshRecognitionStatus();
+
+// Left/right indicator. The bar matches what you SEE on the preview (mirrored if MIRROR_PREVIEW);
+// the text also uses the on-screen (mirrored) view. Positive steering = turn right, negative = left.
+function updatePosition(off, steer) {
+  const mark = $("mark"), txt = $("posText");
+  if (off == null) { mark.style.background = "#666"; mark.style.left = "50%"; txt.textContent = "Person: -"; txt.style.color = "#aaa"; return; }
+  const shown = MIRROR_PREVIEW ? -off : off;   // position as displayed on screen
+  const side = Math.abs(off) < DEAD_ZONE_UI ? "CENTER" : (shown < 0 ? "LEFT" : "RIGHT");
+  const turn = Math.abs(steer || 0) < 0.05 ? "STOPPED" : (steer < 0 ? "LEFT" : "RIGHT");
+  mark.style.left = (50 + shown * 50) + "%";
+  mark.style.background = side === "CENTER" ? "lime" : "orange";
+  txt.style.color = side === "CENTER" ? "lime" : "orange";
+  txt.textContent = `Person on ${side} (as shown)  |  turning ${turn}`;
+}
+
+// Converts a normalized [x1,y1,x2,y2] box to canvas pixels (with the optional head-box estimate).
+function boxToPixels(box) {
+  let [x1, y1, x2, y2] = [box[0] * canvas.width, box[1] * canvas.height, box[2] * canvas.width, box[3] * canvas.height];
+  if (!SHOW_FULL_BODY_BOX) {
+    const bw = x2 - x1, bh = y2 - y1;
+    const hw = bw * FACE_BOX_WIDTH_RATIO;
+    const hh = Math.min(hw * FACE_BOX_ASPECT, bh);
+    const cx = (x1 + x2) / 2;
+    x1 = cx - hw / 2; x2 = cx + hw / 2;
+    y2 = y1 + hh;   // keep the top edge, shrink downward
+  }
+  return [x1, y1, x2, y2];
+}
+
+function drawBox(box, id, others) {
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 360;
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Center line + dead-zone band: the robot only turns once you leave this band.
+  const gx = canvas.width / 2, gz = DEAD_ZONE_UI * gx;
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.fillRect(gx - gz, 0, gz * 2, canvas.height);
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, canvas.height); ctx.stroke();
+  // Other faces (not followed): red box.
+  ctx.strokeStyle = "red";
+  ctx.lineWidth = Math.max(3, canvas.width / 200);
+  for (const o of (others || [])) {
+    const [ox1, oy1, ox2, oy2] = boxToPixels(o);
+    ctx.strokeRect(ox1, oy1, ox2 - ox1, oy2 - oy1);
+    ctx.fillStyle = "red";
+    ctx.font = `bold ${Math.max(16, canvas.width / 40)}px Arial`;
+    const label = "UNKNOWN", ly = Math.max(20, oy1 - 8);
+    if (MIRROR_PREVIEW) {
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.fillText(label, -(ox2 - 6), ly);
+      ctx.restore();
+    } else {
+      ctx.fillText(label, ox1 + 6, ly);
+    }
+  }
+  if (!box) return;
+  const [x1, y1, x2, y2] = boxToPixels(box);
+  ctx.strokeStyle = "lime";
+  ctx.lineWidth = Math.max(3, canvas.width / 200);
+  ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+  ctx.fillStyle = "lime";
+  ctx.font = `bold ${Math.max(16, canvas.width / 40)}px Arial`;
+  const label = "TARGET", ly = Math.max(20, y1 - 8);
+  if (MIRROR_PREVIEW) {
+    // The canvas is mirrored by CSS, so flip the text once more to keep it readable.
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.fillText(label, -(x2 - 6), ly);
+    ctx.restore();
+  } else {
+    ctx.fillText(label, x1 + 6, ly);
+  }
+}
+
+// If the server stops sending telemetry (phone stream dropped, etc.), don't leave stale data on screen.
+setInterval(() => {
+  if (lastTelemetryTime && performance.now() - lastTelemetryTime > TELEMETRY_STALE_MS) {
+    lastTelemetryTime = 0;
+    drawBox(null);
+    $("command").textContent = "STOP";
+    $("fps").textContent = "-";
+    setStatus($("target"), "No data", "connecting");
+    $("faceStatus").textContent = "No telemetry from server";
+    updatePosition(null);
+  }
+}, 200);
+
+/* ===== CAMERA + WEBRTC ===== */
+let pc = null, stream = null, wakeLock = null, restarting = false;
+
+function waitForIce(peer, timeoutMs) {
+  return new Promise(resolve => {
+    if (peer.iceGatheringState === "complete") return resolve();
+    const done = () => { peer.removeEventListener("icegatheringstatechange", check); resolve(); };
+    const check = () => { if (peer.iceGatheringState === "complete") done(); };
+    peer.addEventListener("icegatheringstatechange", check);
+    setTimeout(done, timeoutMs);
+  });
+}
+
+async function startWebRTC() {
+  // Signaling goes through the ngrok HTTPS URL; the video itself goes peer-to-peer (STUN helps if the networks differ).
+  pc = new RTCPeerConnection({ iceServers: STUN_URL ? [{ urls: STUN_URL }] : [] });
+
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    log("[WEBRTC] " + s);
+    setStatus($("rtcStatus"), s, s === "connected" ? "connected" : (s === "connecting" || s === "new") ? "connecting" : "disconnected");
+    if ((s === "failed" || s === "closed") && stream && !restarting) {
+      restarting = true;
+      setTimeout(async () => {
+        try { pc.close(); await startWebRTC(); } catch (e) { log("[WEBRTC] Restart failed: " + e.message); }
+        restarting = false;
+      }, 2000);
+    }
+  };
+
+  const track = stream.getVideoTracks()[0];
+  const sender = pc.addTrack(track, stream);
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await waitForIce(pc, 3000);
+
+  const res = await fetch("/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
+  });
+  if (!res.ok) throw new Error("/offer returned HTTP " + res.status);
+  await pc.setRemoteDescription(await res.json());
+
+  // Low latency: cap bitrate/fps, shrink what is sent, prefer smooth frames over sharp ones.
+  try {
+    const p = sender.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    Object.assign(p.encodings[0], {
+      maxBitrate: SEND_MAX_BITRATE,
+      maxFramerate: SEND_MAX_FPS,
+      scaleResolutionDownBy: SEND_SCALE_DOWN
+    });
+    p.degradationPreference = "maintain-framerate";
+    await sender.setParameters(p);
+  } catch (e) { log("[WEBRTC] Could not tune sender: " + e.message); }
+}
+
+async function startCamera() {
+  try {
+    $("startButton").disabled = true;
+    log("[CAMERA] Requesting front camera...");
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    $("startPanel").hidden = true;
+    $("cameraContainer").hidden = false;
+    $("robotStatePanel").hidden = false;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    drawBox(null);
+    setStatus($("camStatus"), "On", "connected");
+    $("faceStatus").textContent = "Camera on, waiting for target...";
+    $("startButton").textContent = "Camera Running";
+    log(`[CAMERA] Started ${video.videoWidth}x${video.videoHeight}` + (video.videoHeight > video.videoWidth ? " (portrait - landscape is recommended)" : ""));
+
+    try { wakeLock = await navigator.wakeLock.request("screen"); log("[CAMERA] Screen wake lock on"); }
+    catch (e) { log("[CAMERA] Wake lock unavailable - disable Auto-Lock on the phone"); }
+
+    await startWebRTC();
+  } catch (e) {
+    console.error(e);
+    log("[CAMERA] Error: " + e.message);
+    setStatus($("camStatus"), "Error", "disconnected");
+    $("faceStatus").textContent = window.isSecureContext ? "Camera or WebRTC error" : "Open the https:// ngrok URL for camera access";
+    $("startButton").disabled = false;
+  }
+}
+
+$("startButton").addEventListener("click", startCamera);
+
+// Safari drops the wake lock when the tab is hidden; re-acquire it when the page returns.
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && stream) {
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+  }
+});
+
+log("[SYSTEM] Robot page loaded" + (window.isSecureContext ? "" : " - NOT a secure context: open the https ngrok URL on the iPhone"));
+connectWebSocket();
+</script>
+</body>
+</html>
